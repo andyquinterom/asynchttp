@@ -12,13 +12,15 @@ NULL
 
 RequestBuilder <- new.env(parent = emptyenv())
 
-RequestBuilder$new <- function(verb, url) .Call(wrap__RequestBuilder__new, verb, url)
+RequestBuilder$from_client <- function(client, url) .Call(wrap__RequestBuilder__from_client, client, url)
+
+RequestBuilder$set_method <- function(verb) invisible(.Call(wrap__RequestBuilder__set_method, self, verb))
 
 RequestBuilder$set_header <- function(header_name, header_value) invisible(.Call(wrap__RequestBuilder__set_header, self, header_name, header_value))
 
 RequestBuilder$set_body_raw <- function(body) invisible(.Call(wrap__RequestBuilder__set_body_raw, self, body))
 
-RequestBuilder$send_request <- function(http_client) .Call(wrap__RequestBuilder__send_request, self, http_client)
+RequestBuilder$send_request <- function() .Call(wrap__RequestBuilder__send_request, self)
 
 #' @export
 `$.RequestBuilder` <- function (self, name) { func <- RequestBuilder[[name]]; environment(func) <- environment(); func }
@@ -42,11 +44,25 @@ Response$poll <- function() .Call(wrap__Response__poll, self)
 
 Response$get_content_string <- function() .Call(wrap__Response__get_content_string, self)
 
+Response$get_content_stream <- function() .Call(wrap__Response__get_content_stream, self)
+
 #' @export
 `$.Response` <- function (self, name) { func <- Response[[name]]; environment(func) <- environment(); func }
 
 #' @export
 `[[.Response` <- `$.Response`
+
+BodyStream <- new.env(parent = emptyenv())
+
+BodyStream$is_done <- function() .Call(wrap__BodyStream__is_done, self)
+
+BodyStream$poll <- function() .Call(wrap__BodyStream__poll, self)
+
+#' @export
+`$.BodyStream` <- function (self, name) { func <- BodyStream[[name]]; environment(func) <- environment(); func }
+
+#' @export
+`[[.BodyStream` <- `$.BodyStream`
 
 
 # nolint end

@@ -1,58 +1,95 @@
-ASYNC_HTTP_ENV <- new.env(parent = emptyenv())
-
 #' @export
-post <- function(url) {
-  RequestBuilder$new("post", url)
+new_http_client <- function(concurrency = 4) {
+  HttpClient$new(concurrency)
 }
 
 #' @export
-get <- function(url) {
-  RequestBuilder$new("get", url)
+request_builder <- function(client, url) {
+  RequestBuilder$from_client(client, url)
 }
 
-#' @export
-put <- function(url) {
-  RequestBuilder$new("put", url)
-}
-
-#' @export
-delete <- function(url) {
-  RequestBuilder$new("delete", url)
-}
-
+#' TODO: Handle other types
 #' @export
 set_header <- function(req, header_name, header_value) {
   req$set_header(header_name, header_value)
+  return(invisible(req))
+}
+
+#' @export
+set_method <- function(req, method) {
+  req$set_method(method)
+  return(invisible(req))
 }
 
 #' @export
 body_raw <- function(req, contents) {
   req$set_body_raw(as.raw(contents))
+  return(invisible(req))
 }
 
-POLL_INTERVAL <- 0.005
+POLL_INTERVAL <- 0.005 # nolint: object_name_linter.
 
 #' @export
-send_request <- function(req) {
+send_request <- function(req, poll_interval = POLL_INTERVAL) {
 
-  if (is.null(ASYNC_HTTP_ENV$CLIENT)) {
-    ASYNC_HTTP_ENV$CLIENT <- HttpClient$new(4L)
-  }
-
-  eventual_response <- req$send_request(ASYNC_HTTP_ENV$CLIENT)
+  eventual_response <- req$send_request()
 
   promises::promise(function(resolve, reject) {
 
     poll_recursive <- function() {
       is_ready <- eventual_response$poll()
       if (is_ready) {
-        string_contents <- eventual_response$get_content_string()
-        resolve(string_contents)
+        resolve(eventual_response)
+      } else {
+        later::later(poll_recursive, poll_interval)
       }
-      later::later(poll_recursive, POLL_INTERVAL)
     }
 
     poll_recursive()
 
   })
+}
+
+get_body_string_onFulfilled <- function(resp) {
+  resp$get_content_string()
+}
+
+#' @export
+get_body_string <- function(resp) {
+  promises::then(
+    resp,
+    onFulfilled = get_body_string_onFulfilled
+  )
+}
+
+stream_body_onFulfilled <- function(resp, callback, poll_interval) {
+  body_stream <- resp$get_content_stream()
+
+  promises::promise(function(resolve, reject) {
+
+    poll_recursive <- function() {
+      is_done <- body_stream$is_done()
+      raw_bytes <- body_stream$poll()
+      read_bytes <- length(raw_bytes)
+      if (is_done && read_bytes == 0) {
+        resolve(NULL)
+      } else {
+        if (read_bytes > 0) {
+          callback(raw_bytes)
+        }
+        later::later(poll_recursive, poll_interval)
+      }
+    }
+
+    poll_recursive()
+
+  })
+}
+
+#' @export
+stream_body <- function(resp, callback = function(bytes) {}, .poll_interval = POLL_INTERVAL) {
+  promises::then(
+    resp,
+    onFulfilled = \(resp) stream_body_onFulfilled(resp, callback, .poll_interval)
+  )
 }
