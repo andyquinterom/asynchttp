@@ -1,6 +1,12 @@
 use std::{
-    collections::HashMap, rc::Rc, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex},
-    io::Read
+    collections::HashMap,
+    io::{Read, Write},
+    path::PathBuf,
+    rc::Rc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use extendr_api::prelude::*;
@@ -43,12 +49,11 @@ impl HttpClient {
 
 struct BodyStream {
     is_done: Arc<AtomicBool>,
-    buffer: Arc<Mutex<Vec<u8>>>
+    buffer: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
 impl BodyStream {
     fn new(pool: Rc<rayon::ThreadPool>, res: ureq::Response) -> Self {
-
         let is_done = Arc::new(AtomicBool::new(false));
 
         // Add a reserve capacity for the content length if possible
@@ -58,20 +63,20 @@ impl BodyStream {
             let is_done = Arc::clone(&is_done);
             pool.spawn(move || {
                 let mut res = res.into_reader();
-                let mut temp_buffer = [0; 1024];
+                let mut temp_buffer = [0; 1024 * 8];
                 loop {
                     let read_bytes = res.read(&mut temp_buffer);
                     match read_bytes {
                         Err(e) => {
                             eprintln!("{e}");
                             break;
-                        },
+                        }
                         Ok(0) => break,
                         Ok(n) => {
                             let mut buffer = buffer.lock().expect("Poisoned");
                             buffer.extend_from_slice(&temp_buffer[..n]);
                         }
-                    } 
+                    }
                 }
 
                 is_done.store(true, Ordering::SeqCst);
@@ -79,7 +84,33 @@ impl BodyStream {
         }
         BodyStream {
             is_done,
-            buffer,
+            buffer: Some(buffer),
+        }
+    }
+    fn redirect_to_file(pool: Rc<rayon::ThreadPool>, res: ureq::Response, path: PathBuf) -> Self {
+        let is_done = Arc::new(AtomicBool::new(false));
+
+        {
+            let is_done = Arc::clone(&is_done);
+            pool.spawn(move || {
+                let mut file = std::io::BufWriter::new(
+                    std::fs::File::options()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(path)
+                        .expect("Unable to open file"),
+                );
+                let mut res = res.into_reader();
+
+                std::io::copy(&mut res, &mut file).expect("Unable to redirect to file");
+
+                is_done.store(true, Ordering::SeqCst);
+            });
+        }
+        BodyStream {
+            is_done,
+            buffer: Default::default(),
         }
     }
 }
@@ -89,16 +120,46 @@ impl BodyStream {
     fn is_done(&self) -> bool {
         self.is_done.load(Ordering::SeqCst)
     }
+    fn collect_string(&self) -> String {
+        match &self.buffer {
+            Some(inner_buffer) => {
+                let mut inner_buffer = inner_buffer.lock().expect("Buffer posioned");
+                let mut buffer = Vec::new();
+                std::mem::swap(&mut buffer, &mut inner_buffer);
+                String::from_utf8(buffer).expect("This is not UTF-8")
+            }
+            None => {
+                panic!("This body stream is being redirected to a file");
+            }
+        }
+    }
+    fn collect_json(&self) -> Robj {
+        match &self.buffer {
+            Some(inner_buffer) => {
+                let inner_buffer = inner_buffer.lock().expect("Buffer posioned");
+                serde_json::from_slice(&inner_buffer).expect("Unable to deserialize json")
+            }
+            None => {
+                panic!("This body stream is being redirected to a file");
+            }
+        }
+    }
     fn poll(&self) -> Raw {
-        let mut buffer = self.buffer.lock().expect("Buffer posioned");
-        // Is there a better way to do this? We will always need memory
-        // allocations?
-        let raw = Raw::from_bytes(&buffer);
-        buffer.clear();
-        raw
+        match &self.buffer {
+            Some(inner_buffer) => {
+                let mut buffer = inner_buffer.lock().expect("Buffer posioned");
+                // Is there a better way to do this? We will always need memory
+                // allocations?
+                let raw = Raw::from_bytes(&buffer);
+                buffer.clear();
+                raw
+            }
+            None => {
+                panic!("This body stream is being redirected to a file");
+            }
+        }
     }
 }
-
 
 struct Response {
     thread_pool: Rc<rayon::ThreadPool>,
@@ -111,19 +172,24 @@ impl Response {
         let response_container = self.response_container.lock().expect("POISONENENENE");
         response_container.is_some()
     }
-    fn get_content_string(&self) -> Result<String> {
+    fn get_body_stream(&self) -> Result<BodyStream> {
         let mut response_container = self.response_container.lock().expect("POISONENENENE");
-        let content = response_container.take();
-        content
-            .expect("This function should only be called after the promise is ready")
-            .into_string()
-            .map_err(|err| err.to_string().into())
-    }
-    fn get_content_stream(&self) -> Result<BodyStream> {
-        let mut response_container = self.response_container.lock().expect("POISONENENENE");
-        let content = response_container.take()
+        let content = response_container
+            .take()
             .expect("This function should only be called after the promise is ready");
         Ok(BodyStream::new(self.thread_pool.clone(), content))
+    }
+    fn redirect_body_stream(&self, path: String) -> Result<BodyStream> {
+        let path = PathBuf::from(path);
+        let mut response_container = self.response_container.lock().expect("POISONENENENE");
+        let content = response_container
+            .take()
+            .expect("This function should only be called after the promise is ready");
+        Ok(BodyStream::redirect_to_file(
+            self.thread_pool.clone(),
+            content,
+            path,
+        ))
     }
 }
 
@@ -142,7 +208,7 @@ impl Default for RequestBuilder {
             url: String::new(),
             verb: HttpVerb::Get,
             headers: HashMap::new(),
-            body: Vec::new()
+            body: Vec::new(),
         }
     }
 }
@@ -189,7 +255,9 @@ impl RequestBuilder {
         // at a specific rate and see if it's ready
         // with a response
         let response_container = Arc::new(Mutex::new(None));
-        let http_client = request_builder.client.ok_or("This request has already been executed")?;
+        let http_client = request_builder
+            .client
+            .ok_or("This request has already been executed")?;
         {
             let agent = http_client.agent;
             let response_container = Arc::clone(&response_container);
@@ -215,7 +283,10 @@ impl RequestBuilder {
             });
         }
 
-        Ok(Response { response_container, thread_pool: http_client.thread_pool.clone() })
+        Ok(Response {
+            response_container,
+            thread_pool: http_client.thread_pool.clone(),
+        })
     }
 }
 

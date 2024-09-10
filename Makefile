@@ -1,4 +1,7 @@
 .PHONY: install
 
+document:
+	Rscript -e "rextendr::document()"
+
 install:
-	Rscript -e "rextendr::document(); devtools::install()"
+	Rscript -e "devtools::install()"

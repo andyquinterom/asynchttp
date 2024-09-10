@@ -42,9 +42,9 @@ Response <- new.env(parent = emptyenv())
 
 Response$poll <- function() .Call(wrap__Response__poll, self)
 
-Response$get_content_string <- function() .Call(wrap__Response__get_content_string, self)
+Response$get_body_stream <- function() .Call(wrap__Response__get_body_stream, self)
 
-Response$get_content_stream <- function() .Call(wrap__Response__get_content_stream, self)
+Response$redirect_body_stream <- function(path) .Call(wrap__Response__redirect_body_stream, self, path)
 
 #' @export
 `$.Response` <- function (self, name) { func <- Response[[name]]; environment(func) <- environment(); func }
@@ -55,6 +55,10 @@ Response$get_content_stream <- function() .Call(wrap__Response__get_content_stre
 BodyStream <- new.env(parent = emptyenv())
 
 BodyStream$is_done <- function() .Call(wrap__BodyStream__is_done, self)
+
+BodyStream$collect_string <- function() .Call(wrap__BodyStream__collect_string, self)
+
+BodyStream$collect_json <- function() .Call(wrap__BodyStream__collect_json, self)
 
 BodyStream$poll <- function() .Call(wrap__BodyStream__poll, self)
 

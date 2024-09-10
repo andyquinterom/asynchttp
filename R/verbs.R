@@ -62,34 +62,106 @@ get_body_string <- function(resp) {
   )
 }
 
-stream_body_onFulfilled <- function(resp, callback, poll_interval) {
-  body_stream <- resp$get_content_stream()
+#' @export
+attach_callback <- function(stream_promise, callback = function(bytes) {}, .poll_interval = POLL_INTERVAL) {
 
-  promises::promise(function(resolve, reject) {
+  #TODO: Add asserts
 
-    poll_recursive <- function() {
-      is_done <- body_stream$is_done()
-      raw_bytes <- body_stream$poll()
-      read_bytes <- length(raw_bytes)
-      if (is_done && read_bytes == 0) {
-        resolve(NULL)
-      } else {
-        if (read_bytes > 0) {
-          callback(raw_bytes)
+  promises::then(
+    stream_promise,
+    onFulfilled = \(stream) {
+      promises::promise(function(resolve, reject) {
+
+        poll_recursive <- function() {
+          is_done <- stream$is_done()
+          raw_bytes <- stream$poll()
+          read_bytes <- length(raw_bytes)
+          if (is_done && read_bytes == 0) {
+            resolve(NULL)
+          } else {
+            if (read_bytes > 0) {
+              callback(raw_bytes)
+            }
+            later::later(poll_recursive, .poll_interval)
+          }
         }
-        later::later(poll_recursive, poll_interval)
-      }
+
+        poll_recursive()
+
+      })
     }
+  )
 
-    poll_recursive()
-
-  })
 }
 
 #' @export
-stream_body <- function(resp, callback = function(bytes) {}, .poll_interval = POLL_INTERVAL) {
+collect_string <- function(stream_promise, .poll_interval = POLL_INTERVAL) {
+
+  #TODO: Add asserts
+
+  promises::then(
+    stream_promise,
+    onFulfilled = \(stream) {
+      promises::promise(function(resolve, reject) {
+
+        poll_recursive <- function() {
+          is_done <- stream$is_done()
+          if (is_done) {
+            resolve(stream$collect_string())
+          } else {
+            later::later(poll_recursive, .poll_interval)
+          }
+        }
+
+        poll_recursive()
+
+      })
+    }
+  )
+
+}
+
+#' @export
+collect_json <- function(stream_promise, .poll_interval = POLL_INTERVAL) {
+
+  #TODO: Add asserts
+
+  promises::then(
+    stream_promise,
+    onFulfilled = \(stream) {
+      promises::promise(function(resolve, reject) {
+
+        poll_recursive <- function() {
+          is_done <- stream$is_done()
+          if (is_done) {
+            resolve(stream$collect_json())
+          } else {
+            later::later(poll_recursive, .poll_interval)
+          }
+        }
+
+        poll_recursive()
+
+      })
+    }
+  )
+
+}
+
+#' @export
+get_body_stream <- function(resp, callback = function(bytes) {}, .poll_interval = POLL_INTERVAL) {
   promises::then(
     resp,
-    onFulfilled = \(resp) stream_body_onFulfilled(resp, callback, .poll_interval)
+    onFulfilled = \(resp) resp$get_body_stream()
+  )
+}
+
+#' @export
+redirect_body_stream <- function(resp, path, .poll_interval = POLL_INTERVAL) {
+  promises::then(
+    resp,
+    onFulfilled = \(resp) {
+      resp$redirect_body_stream(path)
+    }
   )
 }

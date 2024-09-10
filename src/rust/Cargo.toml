@@ -11,4 +11,5 @@ name = 'asynchttp'
 [dependencies]
 extendr-api = { version = "0.7.0", features = ["serde"] }
 rayon = "1.10.0"
-ureq = "2.10.1"
+serde_json = "1.0.128"
+ureq = { version = "2.10.1", features = ["json"] }
